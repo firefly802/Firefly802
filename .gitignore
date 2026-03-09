@@ -1,0 +1,21 @@
+# Environments
+.venv
+.env
+
+# IDE
+.idea
+settings.json
+
+# Python
+__pycache__
+.ruff_cache
+.pytest_cache
+
+# Database
+firefly.db
+
+# Logs
+firefly.log
+
+# History
+chat_history.json
