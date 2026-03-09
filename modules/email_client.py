@@ -1,163 +1,246 @@
-import customtkinter as ctk
+"""
+Email client module for Firefly AI.
+Provides email reading functionality with a GUI.
+"""
+
 import imaplib
 import email
-from email.header import decode_header
 import threading
+import customtkinter as ctk
 import os
+from dotenv import load_dotenv
 from . import config
+
+
+def read_latest_email(app):
+    """Reads and displays the latest email from the configured email account."""
+    app.add_message("You", "Read Email 📧", "user")
+    app.add_message("System", "📧 Fetching latest email...", "ai")
+
+    def fetch_email():
+        try:
+            email_address = config.EMAIL_ACCOUNT
+            password = config.EMAIL_PASSWORD
+            imap_server = config.IMAP_SERVER
+
+            if not email_address or not password:
+                app.after(
+                    0,
+                    app.add_message,
+                    "System",
+                    "❌ Email credentials not configured. Check your .env file.",
+                    "error",
+                )
+                return
+
+            # Connect to IMAP server
+            mail = imaplib.IMAP4_SSL(imap_server)
+            mail.login(email_address, password)
+            mail.select("inbox")
+
+            # Search for emails
+            _, messages = mail.search(None, "ALL")
+            email_ids = messages[0].split()
+
+            if not email_ids:
+                app.after(
+                    0,
+                    app.add_message,
+                    "System",
+                    "📭 No emails in inbox.",
+                    "ai",
+                )
+                mail.close()
+                mail.logout()
+                return
+
+            # Get latest email
+            latest_id = email_ids[-1]
+            _, msg_data = mail.fetch(latest_id, "(RFC822)")
+            msg = email.message_from_bytes(msg_data[0][1])
+
+            # Extract email details
+            from_addr = msg.get("From", "Unknown")
+            subject = msg.get("Subject", "No Subject")
+            body = ""
+
+            # Extract email body
+            if msg.is_multipart():
+                for part in msg.get_payload():
+                    if part.get_content_type() == "text/plain":
+                        body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                        break
+            else:
+                body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+
+            # Truncate body if too long
+            body = body[:300] + "..." if len(body) > 300 else body
+
+            email_text = f"From: {from_addr}\nSubject: {subject}\n\n{body}"
+
+            app.after(
+                0,
+                app.add_message,
+                "System",
+                f"📧 Latest Email:\n\n{email_text}",
+                "ai",
+            )
+
+            mail.close()
+            mail.logout()
+
+        except imaplib.IMAP4.error as e:
+            app.after(
+                0,
+                app.add_message,
+                "System",
+                f"❌ Email login failed: {e}. Ensure you're using an App Password.",
+                "error",
+            )
+        except Exception as e:
+            app.after(
+                0,
+                app.add_message,
+                "System",
+                f"❌ Email error: {e}",
+                "error",
+            )
+
+    # Run in background thread
+    threading.Thread(target=fetch_email, daemon=True).start()
+
+
+def open_email_reader(app):
+    """Open the email reader interface."""
+    # Close existing instance if open
+    if hasattr(app, 'email_reader_instance') and app.email_reader_instance:
+        app.email_reader_instance.destroy()
+    
+    reader = EmailReader(app)
+    app.email_reader_instance = reader
+    reader.grab_set()
+
 
 class EmailReader(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
-        self.title("Inbox - Firefly AI 📧")
-        self.geometry("900x600")
-        self.attributes("-topmost", True)
+        self.title("Email Reader - Firefly AI")
+        self.geometry("800x600")
+        self.resizable(True, True)
         
-        # Configure Grid
+        # Configure grid
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
-
-        # --- Header ---
-        self.header = ctk.CTkFrame(self)
-        self.header.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
         
-        self.refresh_btn = ctk.CTkButton(self.header, text="🔄 Refresh Inbox", command=self.load_emails)
-        self.refresh_btn.pack(side="left", padx=10, pady=10)
+        # Header
+        header = ctk.CTkLabel(self, text="📧 Email Reader", font=("Segoe UI", 16, "bold"))
+        header.grid(row=0, column=0, pady=10, padx=10, sticky="w")
         
-        self.status_lbl = ctk.CTkLabel(self.header, text="Ready", text_color="gray")
-        self.status_lbl.pack(side="left", padx=10)
-
-        # --- Email List Area ---
-        self.scroll_frame = ctk.CTkScrollableFrame(self, label_text="Recent Emails")
-        self.scroll_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
-
-        # Load emails automatically on open
+        # Email list
+        self.email_list = ctk.CTkScrollableFrame(self)
+        self.email_list.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        
+        # Status label
+        self.status_label = ctk.CTkLabel(self, text="Loading emails...")
+        self.status_label.grid(row=2, column=0, pady=5, padx=10, sticky="w")
+        
+        # Refresh button
+        refresh_btn = ctk.CTkButton(self, text="Refresh", command=self.load_emails)
+        refresh_btn.grid(row=3, column=0, pady=10, padx=10, sticky="e")
+        
+        # Load emails
         self.load_emails()
-
+    
     def load_emails(self):
-        """Clears the list and starts the fetch thread."""
-        # Clear existing widgets
-        for widget in self.scroll_frame.winfo_children():
+        """Load and display emails."""
+        # Clear existing
+        for widget in self.email_list.winfo_children():
             widget.destroy()
-            
-        self.status_lbl.configure(text="Connecting to server...", text_color="#4fc1ff")
-        self.refresh_btn.configure(state="disabled")
         
-        # Run network operations in background
-        threading.Thread(target=self._fetch_thread, daemon=True).start()
-
-    def _fetch_thread(self):
-        try:
-            # Check credentials
-            if not config.EMAIL_ACCOUNT or not config.EMAIL_PASSWORD:
-                self.after(0, lambda: self.status_lbl.configure(text="❌ Missing Credentials in .env", text_color="#ff5555"))
-                return
-
-            # Connect to IMAP
-            mail = imaplib.IMAP4_SSL(config.IMAP_SERVER)
-            mail.login(config.EMAIL_ACCOUNT, config.EMAIL_PASSWORD)
-            mail.select("inbox")
+        self.status_label.configure(text="Fetching emails...")
+        
+        def fetch():
+            try:
+                emails = self.fetch_emails()
+                self.after(0, lambda: self.display_emails(emails))
+            except Exception as e:
+                self.after(0, lambda: self.status_label.configure(text=f"Error: {str(e)}"))
+        
+        threading.Thread(target=fetch, daemon=True).start()
+    
+    def fetch_emails(self):
+        """Fetch recent emails."""
+        import os
+        from dotenv import load_dotenv
+        load_dotenv()
+        
+        email_address = os.getenv("EMAIL_ADDRESS")
+        password = os.getenv("EMAIL_PASSWORD")
+        imap_server = os.getenv("IMAP_SERVER", "imap.gmail.com")
+        
+        if not email_address or not password:
+            raise Exception("Email credentials not configured. Check your .env file.")
+        
+        mail = imaplib.IMAP4_SSL(imap_server)
+        mail.login(email_address, password)
+        mail.select("inbox")
+        
+        _, messages = mail.search(None, "ALL")
+        email_ids = messages[0].split()
+        
+        emails = []
+        for i in range(min(10, len(email_ids))):  # Last 10 emails
+            latest_id = email_ids[-(i+1)]
+            _, msg_data = mail.fetch(latest_id, "(RFC822)")
+            msg = email.message_from_bytes(msg_data[0][1])
             
-            # Search for all emails
-            status, messages = mail.search(None, "ALL")
-            if not messages or not messages[0]:
-                self.after(0, lambda: self.status_lbl.configure(text="📭 Inbox is empty"))
-                return
-
-            email_ids = messages[0].split()
+            from_addr = msg.get("From", "Unknown")
+            subject = msg.get("Subject", "No Subject")
+            date = msg.get("Date", "Unknown")
             
-            # Get last 15 emails (newest first)
-            latest_ids = email_ids[-15:]
-            latest_ids.reverse() 
-            
-            self.after(0, lambda: self.status_lbl.configure(text=f"Fetching {len(latest_ids)} emails..."))
-
-            for eid in latest_ids:
-                _, msg_data = mail.fetch(eid, "(RFC822)")
-                for response_part in msg_data:
-                    if isinstance(response_part, tuple):
-                        try:
-                            msg = email.message_from_bytes(response_part[1])
-                            # Schedule UI update on main thread
-                            self.after(0, lambda m=msg: self.add_email_item(m))
-                        except Exception as e:
-                            print(f"Error parsing email {eid}: {e}")
-            
-            mail.close()
-            mail.logout()
-            self.after(0, lambda: self.status_lbl.configure(text=f"✅ Updated: {len(latest_ids)} emails found", text_color="#98c379"))
-            
-        except imaplib.IMAP4.error as e:
-            self.after(0, lambda: self.status_lbl.configure(text="❌ Login Failed. Check Password.", text_color="#ff5555"))
-        except Exception as e:
-            self.after(0, lambda: self.status_lbl.configure(text=f"❌ Error: {str(e)}", text_color="#ff5555"))
-        finally:
-            self.after(0, lambda: self.refresh_btn.configure(state="normal"))
-
-    def add_email_item(self, msg):
-        """Adds a single email card to the scrollable list."""
-        try:
-            # Decode Subject
-            subject, encoding = decode_header(msg["Subject"])[0]
-            if isinstance(subject, bytes):
-                subject = subject.decode(encoding if encoding else "utf-8", errors="replace")
-            
-            # Decode Sender
-            sender = msg.get("From", "Unknown")
-            
-            # Create Card
-            card = ctk.CTkFrame(self.scroll_frame, fg_color=config.BUTTON_BG)
-            card.pack(fill="x", pady=5, padx=5)
-            
-            # Layout
-            info_frame = ctk.CTkFrame(card, fg_color="transparent")
-            info_frame.pack(side="left", fill="both", expand=True, padx=10, pady=5)
-            
-            ctk.CTkLabel(info_frame, text=sender, font=("Segoe UI", 12, "bold"), anchor="w").pack(fill="x")
-            ctk.CTkLabel(info_frame, text=subject, font=("Segoe UI", 12), anchor="w", text_color="gray").pack(fill="x")
-            
-            # Read Button
-            ctk.CTkButton(card, text="Read", width=60, height=30, 
-                         command=lambda: self.read_email(msg, subject)).pack(side="right", padx=10, pady=10)
-                         
-        except Exception as e:
-            print(f"Error adding email item: {e}")
-
-    def read_email(self, msg, subject):
-        """Opens a popup to read the email body."""
-        body = "Could not extract text."
-        try:
+            # Extract body
+            body = ""
             if msg.is_multipart():
-                for part in msg.walk():
-                    content_type = part.get_content_type()
-                    content_disposition = str(part.get("Content-Disposition"))
-                    
-                    if content_type == "text/plain" and "attachment" not in content_disposition:
-                        payload = part.get_payload(decode=True)
-                        if payload:
-                            body = payload.decode(errors="replace")
-                            break
+                for part in msg.get_payload():
+                    if part.get_content_type() == "text/plain":
+                        body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                        break
             else:
-                payload = msg.get_payload(decode=True)
-                if payload:
-                    body = payload.decode(errors="replace")
-        except Exception as e:
-            body = f"Error reading body: {e}"
-
-        # Popup Window
-        win = ctk.CTkToplevel(self)
-        win.title(f"Reading: {subject[:30]}...")
-        win.geometry("700x500")
-        win.attributes("-topmost", True)
+                body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+            
+            body = body[:200] + "..." if len(body) > 200 else body
+            
+            emails.append({
+                'from': from_addr,
+                'subject': subject,
+                'date': date,
+                'body': body
+            })
         
-        ctk.CTkLabel(win, text=subject, font=("Segoe UI", 16, "bold"), wraplength=680).pack(pady=10, padx=10)
+        mail.close()
+        mail.logout()
+        return emails
+    
+    def display_emails(self, emails):
+        """Display emails in the list."""
+        if not emails:
+            ctk.CTkLabel(self.email_list, text="No emails found.").pack(pady=20)
+            self.status_label.configure(text="")
+            return
         
-        textbox = ctk.CTkTextbox(win, font=("Consolas", 12))
-        textbox.pack(fill="both", expand=True, padx=10, pady=10)
-        textbox.insert("0.0", body)
-        textbox.configure(state="disabled") # Read-only
+        for email_data in emails:
+            frame = ctk.CTkFrame(self.email_list)
+            frame.pack(fill="x", padx=5, pady=5)
+            
+            # From and Subject
+            from_label = ctk.CTkLabel(frame, text=f"From: {email_data['from']}", font=("Segoe UI", 12, "bold"))
+            from_label.pack(anchor="w", padx=10, pady=2)
+            
+            subject_label = ctk.CTkLabel(frame, text=f"Subject: {email_data['subject']}", font=("Segoe UI", 10))
+            subject_label.pack(anchor="w", padx=10, pady=2)
+            
+            # Body preview
+            body_label = ctk.CTkLabel(frame, text=email_data['body'], font=("Segoe UI", 9), wraplength=700, justify="left")
+            body_label.pack(anchor="w", padx=10, pady=5)
         
-        ctk.CTkButton(win, text="Close", command=win.destroy).pack(pady=10)
-
-def open_email_reader(app):
-    EmailReader(app)
+        self.status_label.configure(text=f"Loaded {len(emails)} emails")

@@ -13,6 +13,7 @@ class NotesManager(ctk.CTkToplevel):
         
         self.parent = parent
         self.selected_note_id = None
+        self.all_notes = [] # Cache for filtering
 
         self.init_ui()
         self.load_notes_list()
@@ -26,15 +27,20 @@ class NotesManager(ctk.CTkToplevel):
         # --- Left Panel: Notes List ---
         left_frame = ctk.CTkFrame(self, width=250)
         left_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        left_frame.grid_rowconfigure(1, weight=1)
+        left_frame.grid_rowconfigure(2, weight=1) # Listbox expands
 
-        ctk.CTkLabel(left_frame, text="My Notes", font=("Segoe UI", 16, "bold")).grid(row=0, column=0, pady=10)
+        ctk.CTkLabel(left_frame, text="My Notes", font=("Segoe UI", 16, "bold")).grid(row=0, column=0, pady=(10, 5))
+
+        # Search Bar
+        self.search_entry = ctk.CTkEntry(left_frame, placeholder_text="🔍 Search notes...")
+        self.search_entry.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
+        self.search_entry.bind("<KeyRelease>", self.filter_notes)
 
         self.notes_listbox = tk.Listbox(left_frame, bg="#2b2b2b", fg="white", border=0, selectbackground="#007acc", font=("Segoe UI", 12))
-        self.notes_listbox.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        self.notes_listbox.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
         self.notes_listbox.bind("<<ListboxSelect>>", self.on_note_select)
 
-        ctk.CTkButton(left_frame, text="+ New Note", command=self.new_note).grid(row=2, column=0, pady=10, padx=10, sticky="ew")
+        ctk.CTkButton(left_frame, text="+ New Note", command=self.new_note).grid(row=3, column=0, pady=10, padx=10, sticky="ew")
 
         # --- Right Panel: Editor ---
         right_frame = ctk.CTkFrame(self)
@@ -58,23 +64,35 @@ class NotesManager(ctk.CTkToplevel):
         ctk.CTkButton(btn_frame, text="Delete", command=self.delete_note, fg_color="#ff5555", hover_color="#cc0000", width=100).pack(side="right", padx=5)
 
     def load_notes_list(self):
-        self.notes_listbox.delete(0, tk.END)
         self.all_notes = notes.load_notes()
+        self.filter_notes()
+
+    def filter_notes(self, event=None):
+        search_term = self.search_entry.get().lower()
+        self.notes_listbox.delete(0, tk.END)
+
+        # Store filtered notes in a separate list to map selection index correctly
+        self.filtered_notes = []
+
         for note in self.all_notes:
-            self.notes_listbox.insert(tk.END, note['title'])
+            if search_term in note['title'].lower() or search_term in note['content'].lower():
+                self.notes_listbox.insert(tk.END, note['title'])
+                self.filtered_notes.append(note)
 
     def on_note_select(self, event):
         selection = self.notes_listbox.curselection()
         if selection:
             index = selection[0]
-            note = self.all_notes[index]
-            self.selected_note_id = note['id']
-            
-            self.title_entry.delete(0, tk.END)
-            self.title_entry.insert(0, note['title'])
-            
-            self.content_text.delete("1.0", tk.END)
-            self.content_text.insert("1.0", note['content'])
+            # Use filtered_notes to get the correct note based on current view
+            if index < len(self.filtered_notes):
+                note = self.filtered_notes[index]
+                self.selected_note_id = note['id']
+
+                self.title_entry.delete(0, tk.END)
+                self.title_entry.insert(0, note['title'])
+
+                self.content_text.delete("1.0", tk.END)
+                self.content_text.insert("1.0", note['content'])
 
     def new_note(self):
         self.selected_note_id = None

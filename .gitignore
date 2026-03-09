@@ -19,3 +19,6 @@ firefly.log
 
 # History
 chat_history.json
+
+# Models
+models/

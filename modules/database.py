@@ -24,9 +24,16 @@ def initialize_database():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             text TEXT NOT NULL,
             completed BOOLEAN NOT NULL DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            date_completed TEXT
         )
     ''')
+    
+    # Add date_completed column if it doesn't exist (for migration)
+    try:
+        cursor.execute("ALTER TABLE todos ADD COLUMN date_completed TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
 
     # Reminders
     cursor.execute('''
@@ -56,6 +63,23 @@ def initialize_database():
             phone TEXT NOT NULL
         )
     ''')
+
+    # Notes
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # --- Create Indexes for Performance ---
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_appointments_date ON appointments(date)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_todos_completed ON todos(completed)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_reminders_completed ON reminders(completed)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at)')
 
     conn.commit()
     conn.close()
@@ -128,5 +152,166 @@ def migrate_legacy_data():
         except Exception as e:
             print(f"Error migrating contacts: {e}")
 
+    conn.commit()
+    conn.close()
+
+# ==========================================
+#               DATA ACCESS LAYER
+# ==========================================
+
+# --- To-Do Operations ---
+def load_todos():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM todos")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"id": row["id"], "text": row["text"], "completed": bool(row["completed"]), "date_completed": row["date_completed"]} for row in rows]
+
+def add_task(task_text):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO todos (text, completed) VALUES (?, ?)", (task_text, False))
+    conn.commit()
+    conn.close()
+    return load_todos()
+
+def toggle_task(index):
+    todos = load_todos()
+    if 0 <= index < len(todos):
+        task = todos[index]
+        new_status = not task["completed"]
+        date_completed = datetime.date.today().isoformat() if new_status else None
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE todos SET completed = ?, date_completed = ? WHERE id = ?", (new_status, date_completed, task["id"]))
+        conn.commit()
+        conn.close()
+    return load_todos()
+
+def delete_completed_tasks():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM todos WHERE completed = 1")
+    conn.commit()
+    conn.close()
+    return load_todos()
+
+# --- Reminder Operations ---
+def load_reminders():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM reminders")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"id": row["id"], "text": row["text"], "remind_at": row["remind_at"], "completed": bool(row["completed"])} for row in rows]
+
+def add_reminder(text, remind_at):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO reminders (text, remind_at, completed) VALUES (?, ?, ?)", (text, remind_at, False))
+    conn.commit()
+    conn.close()
+    return load_reminders()
+
+def mark_reminder_completed(reminder_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE reminders SET completed = 1 WHERE id = ?", (reminder_id,))
+    conn.commit()
+    conn.close()
+
+# --- Appointment Operations ---
+def get_appointments_for_date(date_str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM appointments WHERE date = ? ORDER BY time", (date_str,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"id": row["id"], "date": row["date"], "time": row["time"], "description": row["description"]} for row in rows]
+
+def add_appointment(date_str, time_str, description):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO appointments (date, time, description) VALUES (?, ?, ?)", (date_str, time_str, description))
+    conn.commit()
+    conn.close()
+
+def delete_appointment(date_str, appointment):
+    if "id" in appointment:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM appointments WHERE id = ?", (appointment["id"],))
+        conn.commit()
+        conn.close()
+    else:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM appointments WHERE date = ? AND time = ? AND description = ?", 
+                       (date_str, appointment["time"], appointment["description"]))
+        conn.commit()
+        conn.close()
+
+# --- Contact Operations ---
+def load_contacts():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM contacts ORDER BY name")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"id": row["id"], "name": row["name"], "phone": row["phone"]} for row in rows]
+
+def add_contact(name, phone):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO contacts (name, phone) VALUES (?, ?)", (name, phone))
+    conn.commit()
+    conn.close()
+
+def update_contact(old_contact, new_name, new_phone):
+    if "id" in old_contact:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE contacts SET name = ?, phone = ? WHERE id = ?", (new_name, new_phone, old_contact["id"]))
+        conn.commit()
+        conn.close()
+        return True
+    return False
+
+def delete_contact(contact):
+    if "id" in contact:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM contacts WHERE id = ?", (contact["id"],))
+        conn.commit()
+        conn.close()
+
+# --- Note Operations ---
+def load_notes():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM notes ORDER BY updated_at DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"id": row["id"], "title": row["title"], "content": row["content"], "updated_at": row["updated_at"]} for row in rows]
+
+def add_note(title, content):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO notes (title, content) VALUES (?, ?)", (title, content))
+    conn.commit()
+    conn.close()
+
+def update_note(note_id, title, content):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE notes SET title = ?, content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (title, content, note_id))
+    conn.commit()
+    conn.close()
+
+def delete_note(note_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM notes WHERE id = ?", (note_id,))
     conn.commit()
     conn.close()

@@ -1,74 +1,123 @@
-# --- Standard Library Imports ---
+"""
+CSV Contacts module for Firefly AI.
+Provides functionality to import and export contacts from/to CSV files.
+"""
+
 import csv
 import os
-import threading
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
+from . import contacts
 
-# --- Local Imports ---
-from . import contacts as contact_manager
 
-def import_contacts_from_csv(app):
+def import_contacts_from_csv(parent):
     """
-    Opens a file dialog to select a CSV file and imports contacts from it.
+    Open a file dialog to import contacts from a CSV file.
+    
+    Args:
+        parent: Parent window for the file dialog
     """
     file_path = filedialog.askopenfilename(
-        title="Select Contacts CSV",
-        filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")]
+        parent=parent,
+        title="Select CSV file to import contacts",
+        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
     )
-
+    
     if not file_path:
         return
-
-    def _run():
-        try:
-            app.after(0, lambda: app.add_message("System", f"🔄 Importing contacts from {os.path.basename(file_path)}...", "ai"))
+    
+    try:
+        imported_count = 0
+        failed_count = 0
+        
+        with open(file_path, 'r', encoding='utf-8') as f:
+            # Try to detect if the first row is a header
+            reader = csv.reader(f)
+            first_row = next(reader, None)
             
-            imported_count = 0
-            existing_contacts = {c['phone'] for c in contact_manager.load_contacts() if 'phone' in c}
+            if not first_row:
+                messagebox.showwarning("Error", "CSV file is empty")
+                return
             
-            with open(file_path, mode='r', encoding='utf-8-sig') as csvfile:
-                reader = csv.DictReader(csvfile)
-                
-                # Normalize headers to lowercase for easier matching
-                headers = [h.lower() for h in reader.fieldnames or []]
-                
-                # Find the best matching columns for name and phone
-                name_col = next((h for h in headers if 'name' in h), None)
-                phone_col = next((h for h in headers if 'phone' in h or 'mobile' in h or 'cell' in h), None)
-                
-                if not name_col or not phone_col:
-                    app.after(0, lambda: app.add_message("System", "❌ Error: Could not identify 'Name' or 'Phone' columns in CSV.", "error"))
-                    return
-
-                # Map back to original case-sensitive headers
-                original_name_col = [h for h in reader.fieldnames if h.lower() == name_col][0]
-                original_phone_col = [h for h in reader.fieldnames if h.lower() == phone_col][0]
-
-                for row in reader:
-                    name = row.get(original_name_col, "").strip()
-                    phone = row.get(original_phone_col, "").strip()
+            # Check if first row looks like headers
+            is_header = all(col.lower() in ['name', 'email', 'phone', 'address', 'contact', 'mail'] 
+                           for col in first_row)
+            
+            # Reset reader
+            f.seek(0)
+            reader = csv.reader(f)
+            
+            # Skip header if detected
+            if is_header:
+                next(reader)
+            
+            # Process rows
+            for row in reader:
+                try:
+                    if len(row) < 1:
+                        continue
                     
-                    # Basic cleanup of phone number (keep only digits and +)
-                    if phone:
-                        phone = "".join(filter(lambda x: x.isdigit() or x == '+', phone))
+                    name = row[0].strip() if row[0] else ""
+                    email = row[1].strip() if len(row) > 1 else ""
+                    phone = row[2].strip() if len(row) > 2 else ""
+                    address = row[3].strip() if len(row) > 3 else ""
+                    
+                    if name:
+                        success = contacts.add_contact(name, email, phone, address)
+                        if success:
+                            imported_count += 1
+                        else:
+                            failed_count += 1
+                            
+                except Exception as e:
+                    failed_count += 1
+                    print(f"Error importing row: {e}")
+        
+        message = f"✅ Imported {imported_count} contacts successfully"
+        if failed_count > 0:
+            message += f"\n⚠️ Failed to import {failed_count} contacts (duplicates or invalid)"
+        
+        messagebox.showinfo("Import Complete", message)
+        
+    except Exception as e:
+        messagebox.showerror("Import Error", f"Error importing CSV: {str(e)}")
 
-                    if name and phone and phone not in existing_contacts:
-                        contact_manager.add_contact(name, phone)
-                        existing_contacts.add(phone)
-                        imported_count += 1
 
-            if imported_count > 0:
-                msg = f"✅ Successfully imported {imported_count} new contact(s) from CSV."
-                # Refresh the calendar view if it's open
-                if hasattr(app, 'calendar_view_instance') and app.calendar_view_instance:
-                    app.calendar_view_instance.update_contacts_list()
-            else:
-                msg = "ℹ️ No new contacts found to import."
-
-            app.after(0, lambda: app.add_message("System", msg, "ai"))
-
-        except Exception as e:
-            error_msg = f"❌ An error occurred during CSV import: {e}"
-            app.after(0, lambda: app.add_message("System", error_msg, "error"))
-
-    threading.Thread(target=_run, daemon=True).start()
+def export_contacts_to_csv(parent):
+    """
+    Open a file dialog to export contacts to a CSV file.
+    
+    Args:
+        parent: Parent window for the file dialog
+    """
+    file_path = filedialog.asksaveasfilename(
+        parent=parent,
+        title="Save contacts as CSV",
+        defaultextension=".csv",
+        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+    )
+    
+    if not file_path:
+        return
+    
+    try:
+        contact_list = contacts.load_contacts()
+        
+        with open(file_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            
+            # Write header
+            writer.writerow(['Name', 'Email', 'Phone', 'Address'])
+            
+            # Write contacts
+            for contact in contact_list:
+                writer.writerow([
+                    contact.get('name', ''),
+                    contact.get('email', ''),
+                    contact.get('phone', ''),
+                    contact.get('address', '')
+                ])
+        
+        messagebox.showinfo("Export Complete", f"✅ Exported {len(contact_list)} contacts to CSV")
+        
+    except Exception as e:
+        messagebox.showerror("Export Error", f"Error exporting contacts: {str(e)}")
